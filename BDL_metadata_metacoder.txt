@@ -1,0 +1,15 @@
+Site	Mine	Location	Stage	Year	Trap
+X11	Canga	Canga	RefCan	NA	Malaise
+X10	Canga	Canga	RefCan	NA	Malaise
+X12	Canga	Canga	RefCan	NA	Malaise
+X16	Iron	RF	RefFor	NA	Malaise
+X25	Iron	RF	RefFor	NA	Malaise
+X17	Iron	W	WP0_Soil	0	Malaise
+X21	Iron	S4	WP1_Ini	2016	Malaise
+X14	Iron	NW2	WP2_Int	2011	Malaise
+X22	Iron	S4	WP2_Int	2012	Malaise
+X23	Iron	S4	WP2_Int	2013	Malaise
+X18	Iron	W	WP2_Int	2012	Malaise
+X24	Iron	S4	WP3_Adv	2010	Malaise
+X20	Iron	W	WP3_Adv	2010	Malaise
+X15	Iron	NW2	WP3_Adv	2010	Malaise
