@@ -1,0 +1,3 @@
+Pool1 /DIRECTORY_INFORMATION/pool1_merged.fastq
+Pool2 /DIRECTORY_INFORMATION/pool2_merged.fastq
+Pool3 /DIRECTORY_INFORMATION/pool3_merged.fastq
