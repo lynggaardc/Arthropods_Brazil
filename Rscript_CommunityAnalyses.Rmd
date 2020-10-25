@@ -1,0 +1,761 @@
+---
+title: "DNA-based arthropod diversity assessment in Amazonian iron mine lands show ecological succession towards undisturbed reference sites"
+author: "Christina Lynggaard, based on Sichuan et al 2014"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r loading libraries}
+library(ape)
+library(tidyverse)
+library(vegan)
+library(beanplot)
+library(car)
+library(iNEXT)
+library(iNextPD)
+library(ade4)
+library(boral)
+library(mvabund)
+library(RColorBrewer)
+library(betapart)
+library(SpeciesMix)
+library(beepr)
+library(corrplot)
+library(lulu)
+library(phyloseq)
+library(data.table)
+library(metacoder)
+library(UpSetR)
+library(sjmisc)
+library(conflicted)
+library(hilldiv)
+library(phytools)
+library(hilldiv)
+library(rlang)
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+```
+```{r pressure}
+setwd("~/Documents/PHD/Brazil/Manuscript_Iron/Frontiers_files/Files_github/Dry_Leray")
+```
+
+```{r Load data}
+inputfileM <- "BDL_OTU_env.txt"
+
+dataBDL <- read_tsv(
+  inputfileM, col_names = TRUE, na = "NA",
+  col_types = cols(
+    Site = col_character(),
+    Mine = col_factor(c("Iron", "Canga")),
+    Location = col_factor(c("S4", "W", "NW2", "N4P1","N4P2","N4P4")),
+	Stage = col_factor(c("RefCan", "RefFor", "WP0_Soil", "WP1_Ini", "WP2_Int", "WP3_Adv")),
+    Year = col_factor(c("2010", "2011", "2012", "2013", "2014", "2016", "0")),
+    Trap = col_factor(c( "Malaise"))
+  )
+)
+dataBDL <- as_tibble(dataBDL)
+```
+
+```{r}
+# Extract the environment metadata 
+rehabM <- dataBDL %>% 
+  select(Site:LAI)
+
+# to extract the community dataset
+communityM <- dataBDL %>% 
+  select(starts_with("OTU")) 
+
+communityAllM <- dataBDL %>% 
+  select(Site) %>% 
+  bind_cols(communityM) %>% 
+  column_to_rownames(var = "Site")
+```
+
+# visualise read number per OTU
+```{r}
+otureadsM <- c(colSums(communityAllM)) 
+sum(otureadsM) 
+otureadsM[otureadsM>5000] <- 5000 # to make the histogram readable
+otuhistM <- hist(otureadsM, breaks = 100)
+text(otuhistM$mids, otuhistM$counts, cex = 0.5, otuhistM$counts, adj = c(.5, -.5), col = "blue3")
+```
+
+#Filter out sites low reads and/or very low numbers of species
+```{r}
+communityM <- communityAllM 
+communityM[communityM < 5] <- 0 
+#View(community)
+
+rehabM$rowsums <- rowSums(communityM) 
+rehabM$rowsums
+
+rehabM$sprichness <- specnumber(communityM, MARGIN = 1) # number of species per site
+rehabM$sprichness
+```
+
+#See if the number of reads is roughly equal per rehabilitation stage
+```{r}
+nboot <- 999 # set to 999 for publication
+
+reads.glmM <- mvabund::manyglm(rowSums(communityM) ~ rehabM$Stage)
+plot(reads.glmM)
+anova(reads.glmM, cor.type = "shrink", test = "score", show.time = "all", nBoot = nboot) 
+```
+
+
+###### METACODER #############
+
+```{r Metacoder}
+mbc_otus <- read.table("BDL_TaxFile_Metacoder.txt", header = T, sep = "\t")
+mbc_samples <- read.table("BDL_metadata_metacoder.txt", header = T, sep = "\t")
+
+mbc_otus[mbc_otus>1] <- 1 # change to presence/absence data
+
+mbc_otus$otu_id <- as.character(mbc_otus$otu)
+mbc_otus$lineage <- as.character(mbc_otus$lineage)
+mbc_samples$Site <- as.character(mbc_samples$Site)
+mbc_samples$Stage <- as.character(mbc_samples$Stage)
+
+mbc_otus <- as_tibble(mbc_otus)
+mbc_samples <- as_tibble(mbc_samples)
+
+objF <- parse_tax_data(mbc_otus, class_cols = "lineage", class_sep = ";",
+                       class_key = c(tax_rank = "info", tax_name = "taxon_name"),
+                       class_regex = "^(.+)__(.+)$")
+
+# accounting for un-even sampling
+objF$data$tax_data <- calc_obs_props(objF, "tax_data")
+#print(objF)
+
+# Getting per-taxon information
+objF$data$tax_abund <- calc_taxon_abund(objF, "tax_data", cols = mbc_samples$Site)
+#print(objF)
+
+# Calculate the number of samples that have reads for each taxon:
+objF$data$tax_occ <- calc_n_samples(objF, "tax_abund", groups = mbc_samples$Stage)
+#print(objF)
+```
+
+# Plotting taxonomic data
+```{r}
+heat_tree(objF, 
+          node_label = objF$taxon_names(),
+          node_size = objF$n_obs(),
+          node_color = objF$data$tax_occ$RefCan, 
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Samples with reads")
+```
+
+#Pairwise comparisons of all the habitats (compare by habitat)
+```{r warning=FALSE}
+objF$data$diff_table <- compare_groups(objF, dataset = "tax_abund",
+                                       cols = mbc_samples$Site,
+                                       groups = mbc_samples$Stage)
+```
+
+```{r}
+heat_tree_matrix(objF,
+                 data = "diff_table",
+                 node_size = n_obs, # number of OTUs with that taxon
+                 node_label = taxon_names,
+                 node_color = log2_median_ratio,
+                 node_color_range = diverging_palette(),
+                 node_color_trans = "linear",
+                 node_color_interval = c(-3, 3),
+                 edge_color_interval = c(-3, 3),
+                 node_size_axis_label = "Number of OTUs",
+                 node_color_axis_label = "Log2 ratio median proportions")
+```
+
+
+################ Alpha diversity analysis ########## 
+
+#make presence/absence dataset
+```{r}
+communityBM <- communityM 
+communityBM[communityBM>1] <- 1 
+rownames(communityBM) 
+```
+
+#Remove non-revegetated and initial sites, as I only have 1 sample and cannot calculate expected number of species. Check info for each dataset to know which sites should be be removed when analysing the other datasets.
+```{r}
+rehabM_noNRIni <- rehabM %>% filter (Stage!= "WP0_Soil", Stage!= "WP1_Ini" )
+communityBM_noNRIni <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("RefCan", "WP2_Int", "WP3_Adv", "RefFor"))
+  #drop the level Exposed
+rehabM_noNRIni$Stage <- forcats::fct_drop(rehabM_noNRIni$Stage, only = c("WP0_Soil", "WP1_Ini"))
+```
+
+# traditional Chao2 estimate for species richness
+```{r}
+(pool1M <- vegan::specpool(communityBM, rehabM$Stage))
+
+(pool1_noNRIni <- vegan::specpool(communityBM_noNRIni, rehabM_noNRIni$Stage))
+```
+  
+Plot Observed Species richness, so you can include NR and initial site
+```{r}
+test <- rehabM
+#order the levels of Stages
+test$Stage <- factor(test$Stage, levels = c( "WP0_Soil","WP1_Ini", "WP2_Int", "WP3_Adv", "RefFor", "RefCan"))
+plot <- ggplot(test, aes(x=Stage, y=sprichness, fill=Location)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+   theme_bw() +
+  ylab("Observed species richness") + xlab("Sites")
+
+plot <-  plot + theme(
+  axis.title.y = element_text(size= rel(1.5)),
+  axis.title.x = element_text(size= rel(1.5)),
+  legend.title = element_text(size= rel(1.5)),
+  strip.text = element_text(size = rel(1.2)),
+  legend.text = element_text(size = rel(1.2)),
+  axis.text = element_text(size=rel(1.5)),
+  panel.background = element_rect(colour = NA),
+  axis.line = element_line(colour="black"))
+
+plot <- plot+ scale_fill_manual(test$Location, values = c("S4" = "#6699FF", "W" = "seagreen3", "NW2" = "skyblue", "N4P1" = "#FFCCFF", "N4P2" = "#CC0066", "N4P4" = "#CC66CC"))
+plot + labs(fill = "Location")
+```
+
+```{r Welch-t test for Chao}
+############ This function (t.test2) will calculate Welch's test
+t.test2 <- function(m1, m2, s1, s2, n1, n2, m0=0, equal.variance=FALSE)
+{
+  if( equal.variance==FALSE ) 
+  {
+    se <- sqrt( (s1^2/n1) + (s2^2/n2) )
+    # welch-satterthwaite df
+    df <- ( (s1^2/n1 + s2^2/n2)^2 )/( (s1^2/n1)^2/(n1-1) + (s2^2/n2)^2/(n2-1) )
+  } else
+  {
+    # pooled standard deviation, scaled by the sample sizes
+    se <- sqrt( (1/n1 + 1/n2) * ((n1-1)*s1^2 + (n2-1)*s2^2)/(n1+n2-2) ) 
+    df <- n1+n2-2
+  }      
+  t <- (m1-m2-m0)/se 
+  dat <- c(m1-m2, se, t, round(df,1), 2*pt(-abs(t),df))    
+  # names(dat) <- c("Difference of means", "Std Error", "t", "df", "p-value")
+  return(dat) 
+}
+
+vec <- rep(NA, 6)
+
+# t test for Int and Adv
+vec[1] <- t.test2(pool1_noNRIni[1, 2], pool1_noNRIni[2, 2], pool1_noNRIni[1, 3]*sqrt(pool1_noNRIni[1, 9]), pool1_noNRIni[2, 3]*sqrt(pool1_noNRIni[2, 9]), pool1_noNRIni[1, 9], pool1_noNRIni[2, 9])[5]
+
+# t test for Int and RC
+vec[2] <- t.test2(pool1_noNRIni[1, 2], pool1_noNRIni[3, 2], pool1_noNRIni[1, 3]*sqrt(pool1_noNRIni[1, 9]), pool1_noNRIni[3, 3]*sqrt(pool1_noNRIni[3, 9]), pool1_noNRIni[1, 9], pool1_noNRIni[3, 9])[5]
+
+# t test for Int and RF
+vec[3] <- t.test2(pool1_noNRIni[1, 2], pool1_noNRIni[4, 2], pool1_noNRIni[1, 3]*sqrt(pool1_noNRIni[1, 9]), pool1_noNRIni[4, 3]*sqrt(pool1_noNRIni[4, 9]), pool1_noNRIni[1, 9], pool1_noNRIni[4, 9])[5]
+
+# t test for Adv and RC
+vec[4] <- t.test2(pool1_noNRIni[2, 2], pool1_noNRIni[3, 2], pool1_noNRIni[2, 3]*sqrt(pool1_noNRIni[2, 9]), pool1_noNRIni[3, 3]*sqrt(pool1_noNRIni[3, 9]), pool1_noNRIni[2, 9], pool1_noNRIni[3, 9])[5]
+
+# t test for Adv and RF
+vec[5] <- t.test2(pool1_noNRIni[2, 2], pool1_noNRIni[4, 2], pool1_noNRIni[2, 3]*sqrt(pool1_noNRIni[2, 9]), pool1_noNRIni[4, 3]*sqrt(pool1_noNRIni[4, 9]), pool1_noNRIni[2, 9], pool1_noNRIni[4, 9])[5]
+
+# t test for RC and RF
+vec[6] <- t.test2(pool1_noNRIni[3, 2], pool1_noNRIni[4, 2], pool1_noNRIni[3, 3]*sqrt(pool1_noNRIni[3, 9]), pool1_noNRIni[4, 3]*sqrt(pool1_noNRIni[4, 9]), pool1_noNRIni[3, 9], pool1_noNRIni[4, 9])[5]
+
+p_values <- vec
+p_values.corr.fdr<-p.adjust(p_values, method = "fdr", n = length(p_values)) 
+p_values.corr.fdr
+```
+
+################ iNEXT analysis ##########
+
+# create separate community datasets for each habitat
+```{r}
+RCM <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("RefCan"))
+RFM <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("RefFor"))
+NRM <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("WP0_Soil"))
+IniM <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("WP1_Ini"))
+IntM <- communityBM %>% dplyr::filter(rehabM$Stage %in% c("WP2_Int"))
+AdvM<- communityBM %>% dplyr::filter(rehabM$Stage %in% c("WP3_Adv"))
+```
+
+```{r}
+cname <- c("RefCan","RefFor","WP0_Soil","WP1_Ini", "WP2_Int","WP3_Adv")
+
+comm4inext_abunM <- matrix(c(colSums(RCM),colSums(RFM), colSums(NRM), colSums(IniM), colSums(IntM), colSums(AdvM)), ncol =6) 
+colnames(comm4inext_abunM) <- cname
+colnameRC <- colnames(RCM)
+rownames(comm4inext_abunM) <- colnameRC 
+```
+
+# add a first row that is the number of sites per habitat
+```{r}
+comm4inextM <- rbind(c(nrow(RCM),nrow(RFM), nrow(NRM), nrow(IniM), nrow(IntM), nrow(AdvM)), comm4inext_abunM) 
+#View(comm4inextM)
+```
+
+# Interpolation and extrapolation of Hill numbers 
+```{r}
+confnum=0.95 # set confidence here
+outcomm0M <- iNEXT(comm4inextM, q=0, conf=confnum, datatype="incidence_freq")
+```
+
+# Hill numbers (q):  0 = sp richness, 1 = Shannon, 2 = inverse Simpson
+```{r}
+outcomm0M$DataInfo
+
+```
+
+```{r Calculate estimated richness}
+Chao <- ChaoRichness(comm4inextM, datatype="incidence_freq") 
+ChaoShannon <- ChaoShannon(comm4inextM, datatype="incidence_freq")
+ChaoSimpson <- ChaoSimpson(comm4inextM, datatype="incidence_freq")
+```
+
+```{r iNEXT}
+outIM <- iNEXT(comm4inextM, q=c(0,1,2), conf=confnum, datatype="incidence_freq")
+
+ggiNEXT(outIM, type=1, facet.var="order") + theme_bw(base_size = 18) 
+```
+
+#Load the tree for phylogenetic diversity analysis
+```{r}
+burninTree <- read.newick("BDL_newick_tree")
+burninTree
+```
+
+```{r}
+commPD_all <- communityBM 
+cname_all <- c("WP0_Soil","WP1_Ini","WP2_Int","WP3_Adv","RefFor","RefCan")
+
+NR <- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("WP0_Soil"))
+Ini <- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("WP1_Ini"))
+Int <- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("WP2_Int"))
+Adv<- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("WP3_Adv"))
+RF <- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("RefFor"))
+RC <- commPD_all %>% dplyr::filter(rehabM$Stage %in% c("RefCan"))
+
+comm4inextPD_all <- matrix(c(colSums(NR),colSums(Ini), colSums(Int), colSums(Adv),colSums(RF), colSums(RC)), ncol = 6) 
+colnames(comm4inextPD_all) <- cname_all
+
+colnameRC<- colnames(RC)
+rownames(comm4inextPD_all) <- colnameRC # add OTU names to the rownames
+```
+
+```{r cleaning tree}
+#How many OTUs are different between my data and the tree? (this tree contains information from other sites that are not from this study)
+MLtree_iron_all <- match_data(comm4inextPD_all,burninTree,output="tree")
+
+#do they match now?
+match_data(comm4inextPD_all, MLtree_iron_all)
+
+#turn the newik file into a phylog object
+ML.tre_all <- newick2phylog(write.tree(MLtree_iron_all)) 
+```
+
+```{r}
+ML.lab <- rownames(comm4inextPD_all) #add some names
+
+NRnames <- rehabM %>% dplyr::filter(rehabM$Stage %in% c("WP0_Soil"))
+Ininames <- rehabM %>% dplyr::filter(rehabM$Stage %in% c("WP1_Ini"))
+Intnames <- rehabM %>% dplyr::filter(rehabM$Stage %in% c("WP2_Int"))
+Advnames<- rehabM %>% dplyr::filter(rehabM$Stage %in% c("WP3_Adv"))
+RFnames <- rehabM %>% dplyr::filter(rehabM$Stage %in% c("RefFor"))
+RCnames <- rehabM %>% dplyr::filter(rehabM$Stage %in% c("RefCan"))
+
+rownames(RC) <- RCnames$Site
+rownames(RF) <- RFnames$Site
+rownames(NR) <- NRnames$Site
+rownames(Ini) <- Ininames$Site
+rownames(Int) <- Intnames$Site
+rownames(Adv) <- Advnames$Site
+
+Ininames$Site
+```
+
+```{r figure phylogenetic tree}
+table.phylog(comm4inextPD_all, ML.tre_all, csize=2, f.phylog=0.7)
+```
+
+```{r Multipart test}
+hierarchy <- read.table("BDL_Hierarchy_multipart.txt", header = TRUE)
+#head(as.matrix(communityBM))
+#head(as.matrix(hierarchy))
+#dim(communityBM)
+#dim(hierarchy)
+
+multipart(communityBM, hierarchy, index = "renyi", scales = 1, nsimul=999)
+```
+
+
+############# BETA diversity ########
+
+```{r CHECK!}
+community.jmdsM <- metaMDS(communityBM, distance = "jaccard", trymax = 40, binary=TRUE)
+community.jmdsM <- metaMDS(communityBM, distance = "jaccard", binary = TRUE, previous.best = community.jmdsM)  
+stressplot(community.jmdsM)
+```
+
+```{r tabasco}
+tabasco(communityBM, use = community.jmdsM, labCol = rehabM$Stage, col = brewer.pal(3, "Oranges"))
+
+```
+
+```{r UpsetR}
+comm4inext_abunM <- as.data.frame(comm4inext_abunM) # comm4inext_abun from iNEXT
+comm4inext_abunM[comm4inext_abunM>1] <- 1 # presence and absence
+
+upset(comm4inext_abunM, sets = c("WP0_Soil", "WP1_Ini", "WP2_Int", "WP3_Adv", "RefFor","RefCan"), cutoff = 6, nintersects = NA, group.by = "sets", keep.order = TRUE, text.scale = 1.5)
+```
+
+#Betapart analysis before removing zerotons and singletons
+
+#do it per Location in the mine:
+```{r Betapart S4}
+communityBM_S4_1 <- communityBM %>% dplyr::filter(rehabM$Location %in% c("S4"))
+communityBM_S4_2 <- communityBM %>% dplyr::filter(rehabM$Location_specif %in% c("NW2_CF"))
+communityBM_S4 <- bind_rows(communityBM_S4_1,communityBM_S4_2 )
+
+rehabMN_S4_1 <- rehabM %>% dplyr::filter(rehabM$Location %in% c("S4"))
+rehabMN_S4_2 <- rehabM %>% dplyr::filter(rehabM$Location_specif %in% c("NW2_CF"))
+rehabMN_S4 <- bind_rows(rehabMN_S4_1,rehabMN_S4_2 )
+
+communityBbetapartM_S4 <- bind_cols(rehabMN_S4, communityBM_S4) 
+
+community.jmdsM_S4 <- metaMDS(communityBM_S4, distance = "jaccard", trymax = 40, binary=TRUE)
+community.jmdsM_S4 <- metaMDS(communityBM_S4, distance = "jaccard", binary = TRUE, previous.best = community.jmdsM_S4) 
+stressplot(community.jmdsM_S4)
+
+#View(communityBbetapartM_NW)
+communityBbetapartM_S4 <- communityBbetapartM_S4 %>% dplyr::select(-c(Mine:sprichness))
+
+IniInt <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP1_Ini", "WP2_Int")) %>% column_to_rownames(var="Site")
+IniAdv <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP1_Ini", "WP3_Adv")) %>% column_to_rownames(var="Site")
+IniCF <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP1_Ini", "RefFor")) %>% column_to_rownames(var="Site")
+IntAdv <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP2_Int", "WP3_Adv")) %>% column_to_rownames(var="Site")
+IntCF <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP2_Int", "RefFor")) %>% column_to_rownames(var="Site")
+AdvCF <- communityBbetapartM_S4 %>% dplyr::filter(rehabMN_S4$Stage %in% c("WP3_Adv", "RefFor")) %>% column_to_rownames(var="Site")
+
+IniInt.multi.dist <- beta.multi(IniInt, index.family="jac")
+IniAdv.multi.dist <- beta.multi(IniAdv, index.family="jac")
+IniCF.multi.dist <- beta.multi(IniCF, index.family="jac")
+IntAdv.multi.dist <- beta.multi(IntAdv, index.family="jac")
+IntCF.multi.dist <- beta.multi(IntCF, index.family="jac")
+AdvCF.multi.dist <- beta.multi(AdvCF, index.family="jac")
+
+multi.all <- list(IniInt = IniInt.multi.dist,IniAdv = IniAdv.multi.dist, IniCF = IniCF.multi.dist, IntAdv = IntAdv.multi.dist, IntCF = IntCF.multi.dist, AdvCF = AdvCF.multi.dist)
+
+ALL.dist <- communityBbetapartM_S4 %>% column_to_rownames(var="Site") %>% beta.pair(index.family="jac")
+ALL.dist.subset <- ALL.dist[["beta.jne"]]
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jne.jmds)
+ALL.dist.subset <- ALL.dist[["beta.jtu"]]
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jtu.jmds)
+```
+
+```{r}
+#Total beta diversity NMDS correlated with turnover-only beta diversity? 
+protest(community.jmdsM_S4, ALL.dist.jtu.jmds) 
+```
+```{r}
+#Total beta diversity NMDS correlated with nestedness-only beta diversity? 
+protest(community.jmdsM_S4, ALL.dist.jne.jmds)
+```
+
+```{r Betapart NW2}
+#Clean the data so it is only NW2
+communityBM_NW_1 <- communityBM %>% dplyr::filter(rehabM$Location %in% c("NW2"))
+communityBM_NW_2 <- communityBM %>% dplyr::filter(rehabM$Location_specif %in% c("S4_CF"))
+communityBM_NW <- bind_rows(communityBM_NW_1,communityBM_NW_2 )
+
+rehabMN_NW_1 <- rehabM %>% dplyr::filter(rehabM$Location %in% c("NW2"))
+rehabMN_NW_2 <- rehabM %>% dplyr::filter(rehabM$Location_specif %in% c("S4_CF"))
+rehabMN_NW <- bind_rows(rehabMN_NW_1,rehabMN_NW_2 )
+
+communityBbetapartM_NW <- bind_cols(rehabMN_NW, communityBM_NW) 
+
+
+community.jmdsM_NW <- metaMDS(communityBM_NW, distance = "jaccard", trymax = 40, binary=TRUE)
+community.jmdsM_S4 <- metaMDS(communityBM_NW, distance = "jaccard", binary = TRUE, previous.best = community.jmdsM_NW) 
+stressplot(community.jmdsM_NW)
+
+#View(communityBbetapartM_NW)
+communityBbetapartM_NW <- communityBbetapartM_NW %>% dplyr::select(-c(Mine:sprichness))
+
+IniInt <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP1_Ini", "WP2_Int")) %>% column_to_rownames(var="Site")
+IniAdv <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP1_Ini", "WP3_Adv")) %>% column_to_rownames(var="Site")
+IniCF <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP1_Ini", "RefFor")) %>% column_to_rownames(var="Site")
+IntAdv <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP2_Int", "WP3_Adv")) %>% column_to_rownames(var="Site")
+IntCF <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP2_Int", "RefFor")) %>% column_to_rownames(var="Site")
+AdvCF <- communityBbetapartM_NW %>% dplyr::filter(rehabMN_NW$Stage %in% c( "WP3_Adv", "RefFor")) %>% column_to_rownames(var="Site")
+
+IniInt.multi.dist <- beta.multi(IniInt, index.family="jac")
+IniAdv.multi.dist <- beta.multi(IniAdv, index.family="jac")
+IniCF.multi.dist <- beta.multi(IniCF, index.family="jac")
+IntAdv.multi.dist <- beta.multi(IntAdv, index.family="jac")
+IntCF.multi.dist <- beta.multi(IntCF, index.family="jac")
+AdvCF.multi.dist <- beta.multi(AdvCF, index.family="jac")
+
+multi.all <- list(IniInt = IniInt.multi.dist, IniAdv = IniAdv.multi.dist,IniCF = IniCF.multi.dist, IntAdv = IntAdv.multi.dist, IntCF = IntCF.multi.dist, AdvCF = AdvCF.multi.dist)
+
+ALL.dist <- communityBbetapartM_NW %>% column_to_rownames(var="Site") %>% beta.pair(index.family="jac")
+ALL.dist.subset <- ALL.dist[["beta.jne"]]
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jne.jmds)
+ALL.dist.subset <- ALL.dist[["beta.jtu"]]
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jtu.jmds)
+```
+
+```{r}
+#Total beta diversity NMDS correlated with turnover-only beta diversity? 
+protest(community.jmdsM_NW, ALL.dist.jtu.jmds)
+```
+```{r}
+#Total beta diversity NMDS correlated with nestedness-only beta diversity? 
+protest(community.jmdsM_NW, ALL.dist.jne.jmds)
+```
+
+```{r}
+#W
+communityBM_W_1 <- communityBM %>% dplyr::filter(rehabM$Location %in% c("W"))
+communityBM_W_2 <- communityBM %>% dplyr::filter(rehabM$Location_specif %in% c("S4_CF", "NW2_CF"))
+communityBM_W <- bind_rows(communityBM_W_1,communityBM_W_2 )
+
+rehabMN_W_1 <- rehabM %>% dplyr::filter(rehabM$Location %in% c("W"))
+rehabMN_W_2 <- rehabM %>% dplyr::filter(rehabM$Location_specif %in% c("S4_CF", "NW2_CF"))
+rehabMN_W <- bind_rows(rehabMN_W_1,rehabMN_W_2 )
+
+communityBbetapartM_W <- bind_cols(rehabMN_W, communityBM_W) 
+
+community.jmdsM_W <- metaMDS(communityBM_W, distance = "jaccard", trymax = 40, binary=TRUE)
+community.jmdsM_S4 <- metaMDS(communityBM_W, distance = "jaccard", binary = TRUE, previous.best = community.jmdsM_W) 
+stressplot(community.jmdsM_W)
+
+
+communityBbetapartM_W <- communityBbetapartM_W %>% dplyr::select(-c(Mine:sprichness))
+
+ExpInt_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP0_Soil", "WP2_Int")) %>% column_to_rownames(var="Site")
+ExpAdv_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP0_Soil", "WP3_Adv")) %>% column_to_rownames(var="Site")
+ExpCF_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP0_Soil", "RefFor")) %>% column_to_rownames(var="Site")
+IntAdv_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP2_Int", "WP3_Adv")) %>% column_to_rownames(var="Site")
+IntCF_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP2_Int", "RefFor")) %>% column_to_rownames(var="Site")
+AdvCF_W <- communityBbetapartM_W %>% dplyr::filter(rehabMN_W$Stage %in% c( "WP3_Adv", "RefFor")) %>% column_to_rownames(var="Site")
+
+ExpInt.multi.dist <- beta.multi(ExpInt_W, index.family="jac")
+ExpAdv.multi.dist <- beta.multi(ExpAdv_W, index.family="jac")
+ExpCF.multi.dist <- beta.multi(ExpCF_W, index.family="jac")
+IntAdv.multi.dist <- beta.multi(IntAdv_W, index.family="jac")
+IntCF.multi.dist <- beta.multi(IntCF_W, index.family="jac")
+AdvCF.multi.dist <- beta.multi(AdvCF_W, index.family="jac")
+
+multi.all <- list(ExpInt_W = ExpInt.multi.dist,ExpAdv_W = ExpAdv.multi.dist, ExpCF_W = ExpCF.multi.dist, IntAdv_W = IntAdv.multi.dist, IntCF_W = IntCF.multi.dist, AdvCF_W = AdvCF.multi.dist)
+
+ALL.dist <- communityBbetapartM_W %>% column_to_rownames(var="Site") %>% beta.pair(index.family="jac")
+ALL.dist.subset <- ALL.dist[["beta.jne"]]
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jne.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jne.jmds)
+ALL.dist.subset <- ALL.dist[["beta.jtu"]]
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset)
+ALL.dist.jtu.jmds <- metaMDS(ALL.dist.subset, previous.best = ALL.dist.jne.jmds)
+stressplot(ALL.dist.jtu.jmds)
+```
+
+```{r}
+#Total beta diversity NMDS correlated with turnover-only beta diversity? 
+protest(community.jmdsM_W, ALL.dist.jtu.jmds, permutations = 999)
+```
+```{r}
+#Total beta diversity NMDS correlated with nestedness-only beta diversity? 
+protest(community.jmdsM_W, ALL.dist.jne.jmds)
+```
+
+
+```{r Beta diversity ordination}
+#Remove zerotons and singletons from communityB
+communityBM <- communityBM[, which(specnumber(communityBM, MARGIN=2) > 1)]
+
+#Create an object with environmental data
+envdata <- rehabM %>% 
+  select(AB:LAI) 
+
+## Ordination including cangas
+pcoa <- cmdscale(vegdist(communityBM, method="jaccard"), eig = TRUE) 
+var.param <- envfit(pcoa$points, envdata[,c(1:3)], permu=999) 
+
+#Calculate variance explained
+percentage <- round(pcoa$eig*100/sum(pcoa$eig),1)
+variance1 <- percentage[1] 
+variance2 <- percentage[2] 
+
+#Plot: AB and S are significant
+ev.AB <- ordisurf(pcoa ~ envdata$AB, plot = FALSE, scaling = 3)
+ev.S <- ordisurf(pcoa ~ envdata$S, plot = FALSE, scaling = 3)
+var <- cbind(rehabM$Stage, envdata, pcoa$point)
+colnames(var) <- c("Stage", "AB","N", "S", "LAI", "PCo1", "PCo2")
+
+var$Stage = factor(var$Stage, levels = c("RC", "RF","WP0_Soil", "WP1_Ini", "WP2_Int","WP3_Adv"))
+colors <- c("#CC79A7","#009E73","black", "#E69F00" ,"#D55E00","#0072B2")
+cols_t1<-colors[var$Stage]
+
+
+par(mfrow=c(1,2))
+plot(var$PCo2 ~ var$PCo1, pch = 21, cex=1.5, xlab = "PCoA1 (12.1%)", ylab = "PCoA2 (10.2%)", main = "Basal area", bg=cols_t1)
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#CC79A7", label = TRUE, alpha=80,show.groups = "RefCan")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#009E73", label = TRUE, alpha=80,show.groups = "RefFor")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="black", label = TRUE, alpha=80,show.groups = "WP0_Soil")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#E69F00", label = TRUE, alpha=80,show.groups = "WP1_Ini")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#D55E00", label = TRUE, alpha=80,show.groups = "WP2_Int")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#0072B2", label = TRUE, alpha=80,show.groups = "WP3_Adv")
+plot(var.param, col="blue", cex=1.2)
+plot(ev.AB, col = "grey48", add = TRUE)
+
+plot(var$PCo2 ~ var$PCo1, pch = 21, cex=1.5, xlab = "PCoA1 (12.1%)", ylab = "PCoA2 (10.2%)", main = "Tree species richness",bg = cols_t1)
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#CC79A7", label = TRUE, alpha=80,show.groups = "RefCan")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#009E73", label = TRUE, alpha=80,show.groups = "RefFor")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="black", label = TRUE, alpha=80,show.groups = "WP0_Soil")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#E69F00", label = TRUE, alpha=80,show.groups = "WP1_Ini")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#D55E00", label = TRUE, alpha=80,show.groups = "WP2_Int")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.8, draw= "polygon", lty=1, col="#0072B2", label = TRUE, alpha=80,show.groups = "WP3_Adv")
+plot(var.param, col="blue", cex=1.2)
+plot(ev.S, col = "grey48", add = TRUE)
+```
+
+#The PCoA for the main text
+```{r}
+plot(var$PCo2 ~ var$PCo1, pch = 21, cex=1.5, xlab = "PCoA1 (12.1%)", ylab = "PCoA2 (10.2%)",bg = "black")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.5, draw= "polygon", lty=1, col="black", label = TRUE, alpha=30, show.groups = "WP0_Soil")
+ordihull(pcoa, groups= rehabM$Stage, cex=0.5, draw= "polygon", lty=1, col="red", label = TRUE,alpha=80, show.groups= c("WP1_Ini", "WP2_Int", "WP3_Adv"))
+ordihull(pcoa, groups= rehabM$Stage, cex=0.5, draw= "polygon", lty=1, col="#009E73", label = TRUE,alpha=80, show.groups= c("RefCan", "RefFor"))
+plot(var.param, col="blue", cex=1.2)
+```
+
+```{r}
+## Ordination without cangas (as they do not have LAI data)
+communityBM_noRC <- communityBM %>% dplyr::filter(rehabM$Mine %in% c("Iron"))
+envdata_noRC <- envdata %>% dplyr::filter(rehabM$Mine %in% c("Iron"))
+rehabM_noRC <- rehabM %>% dplyr::filter(rehabM$Mine %in% c("Iron"))
+
+pcoa.cg <- cmdscale(vegdist(communityBM_noRC, method="jaccard"), eig = TRUE)
+var.param.cg <- envfit(pcoa.cg, envdata_noRC, permu=999)
+var.param.cg
+
+#Calculate variace
+percentage.cg <- round(pcoa.cg$eig*100/sum(pcoa.cg$eig),1)
+variance1.cg <- percentage.cg[1] 
+variance2.cg <- percentage.cg[2] 
+
+## Plot: AB and LAI are significant
+#ev.AB.cg <- ordisurf(pcoa.cg ~ envdata_noRC$AB, plot = FALSE, scaling = 3)
+#ev.S.cg <- ordisurf(pcoa.cg ~ envdata_noRC$S, plot = FALSE, scaling = 3)
+ev.LAI <- ordisurf(pcoa.cg ~ envdata_noRC$LAI, plot = FALSE, scaling = 3)
+
+var.cg <- cbind(rehabM_noRC$Stage, envdata_noRC, pcoa.cg$points)
+colnames(var.cg) <- c("Stage", "AB", "N", "S", "LAI", "PCo1", "PCo2")
+
+var.cg$Stage = factor(var.cg$Stage, levels = c("RefFor","WP0_Soil", "WP1_Ini", "WP2_Int","WP3_Adv"))
+colors2 <- c("#009E73","#F0E442", "#E69F00" ,"#D55E00","#0072B2")
+cols_t2<-colors2[var.cg$Stage]
+
+plot(var.cg$PCo2 ~ var.cg$PCo1, pch = 21, cex=1.5, xlab = "PCoA1 (18.7%", ylab = "PCoA2 (14.4%)", main = "Leaf area index (LAI)", bg = cols_t2)
+ordihull(pcoa.cg, groups= rehabM_noRC$Stage, cex=0.8, draw= "polygon", lty=1, col="#009E73", label = TRUE, alpha=80,show.groups = "RefFor")
+ordihull(pcoa.cg, groups= rehabM_noRC$Stage, cex=0.8, draw= "polygon", lty=1, col="black", label = TRUE, alpha=80,show.groups = "WP0_Soil")
+ordihull(pcoa.cg, groups= rehabM_noRC$Stage, cex=0.8, draw= "polygon", lty=1, col="#E69F00", label = TRUE, alpha=80,show.groups = "WP1_Ini")
+ordihull(pcoa.cg, groups= rehabM_noRC$Stage, cex=0.8, draw= "polygon", lty=1, col="#D55E00", label = TRUE, alpha=80,show.groups = "WP2_Int")
+ordihull(pcoa.cg, groups= rehabM_noRC$Stage, cex=0.8, draw= "polygon", lty=1, col="#0072B2", label = TRUE, alpha=80,show.groups = "WP3_Adv")
+plot(var.param, col="blue", cex=1.2)
+plot(ev.LAI, col = "grey48", add = TRUE)
+```
+
+
+###########
+# MVABUND
+
+```{r test if X site is sig diff from other habitats}
+communityB.mvbM <- mvabund(communityBM) 
+```
+
+```{r Contrast test using mvabund}
+rehabMN1 <- duplicate(rehabM, shallow= FALSE)
+
+#make reference levels
+f <- factor(c("RefFor", "WP0_Soil", "WP1_Ini", "WP2_Int", "WP3_Adv", "RefCan"), levels = c("RefFor", "WP0_Soil", "WP1_Ini", "WP2_Int", "WP3_Adv", "RefCan"))
+fct_relevel(f)
+fct_relevel(f, "WP1_Ini", "RefFor", "WP0_Soil",  "WP2_Int", "WP3_Adv", "RefCan")
+```
+
+
+```{r Test: ControlForest vs. rest}
+rehabMN1$Stage <- forcats::fct_relevel(rehabMN1$Stage, "RefFor")
+arthB.nb <- manyglm(communityB.mvbM ~ rehabMN1$Stage,  family= "binomial")
+
+arthmvabundB.summ.pit <- summary(arthB.nb, test="wald", p.uni="adjusted", resamp = "pit.trap", nBoot=999, show.time=TRUE)
+arthmvabundB.summ.pit$coefficients
+
+pvaluesB=arthmvabundB.summ.pit$coefficients[,2]
+
+pvaluesB.corr.fdr <- p.adjust(pvaluesB, method="fdr", n=length(pvaluesB))
+pvaluesB.corr.fdr
+```
+
+```{r Test: Canga vs. rest}
+rehabMN1$Stage <- forcats::fct_relevel(rehabMN1$Stage, "RefCan")
+arthB.nb <- manyglm(communityB.mvbM ~ rehabMN1$Stage,  family= "binomial")
+
+arthmvabundB.summ.pit <- summary(arthB.nb, test="wald", p.uni="adjusted", resamp = "pit.trap", nBoot=999, show.time=TRUE)
+arthmvabundB.summ.pit$coefficients
+
+pvaluesB=arthmvabundB.summ.pit$coefficients[,2]
+
+pvaluesB.corr.fdr <- p.adjust(pvaluesB, method="fdr", n=length(pvaluesB))
+pvaluesB.corr.fdr
+```
+
+```{r Test: Initial vs. the rest of waste piles}
+rehabMN1$Stage <- forcats::fct_relevel(rehabMN1$Stage, "WP1_Ini")
+
+arthB2.nb <- manyglm(communityB.mvbM  ~ rehabMN1$Stage, family= "binomial")
+
+arthmvabundB.summ.pit2 <- summary(arthB2.nb, test="wald", p.uni="adjusted", resamp = "pit.trap", nBoot=999, show.time=TRUE)
+arthmvabundB.summ.pit2$coefficients
+
+pvaluesB=arthmvabundB.summ.pit2$coefficients[,2]
+pvaluesB.corr.fdr <- p.adjust(pvaluesB, method="fdr", n=length(pvaluesB))
+pvaluesB.corr.fdr
+```
+
+```{r Test: intermediate vs. rest waste piles}
+rehabMN1$Stage <- forcats::fct_relevel(rehabMN1$Stage, "WP2_Int")
+
+arthB.nb <- manyglm(communityB.mvbM ~ rehabMN1$Stage,  family= "binomial")
+
+arthmvabundB.summ.pit <- summary(arthB.nb, test="wald", p.uni="adjusted", resamp = "pit.trap", nBoot=999, show.time=TRUE)
+
+arthmvabundB.summ.pit$coefficients
+
+pvaluesB=arthmvabundB.summ.pit$coefficients[,2]
+
+pvaluesB.corr.fdr <- p.adjust(pvaluesB, method="fdr", n=length(pvaluesB))
+pvaluesB.corr.fdr
+```
+
+```{r Test: advanced vs. rest waste piles}
+rehabMN1$Stage <- forcats::fct_relevel(rehabMN1$Stage, "WP3_Adv")
+
+arthB.nb <- manyglm(communityB.mvbM ~ rehabMN1$Stage,  family= "binomial")
+
+arthmvabundB.summ.pit <- summary(arthB.nb, test="wald", p.uni="adjusted", resamp = "pit.trap", nBoot=999, show.time=TRUE)
+
+arthmvabundB.summ.pit$coefficients
+
+pvaluesB=arthmvabundB.summ.pit$coefficients[,2]
+
+pvaluesB.corr.fdr <- p.adjust(pvaluesB, method="fdr", n=length(pvaluesB))
+pvaluesB.corr.fdr
+```
+
+```{r}
+sessionInfo()
+```
